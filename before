@@ -1,0 +1,270 @@
+import hashlib
+import time
+import json
+from typing import List, Dict, Optional
+
+
+class Block:
+    """Represents a single block in the blockchain"""
+    
+    def _init_(self, index: int, timestamp: float, transactions: List[Dict], 
+                 previous_hash: str, nonce: int = 0):
+        self.index = index
+        self.timestamp = timestamp
+        self.transactions = transactions
+        self.previous_hash = previous_hash
+        self.nonce = nonce
+        self.hash = self.calculate_hash()
+    
+    def calculate_hash(self) -> str:
+        """Calculate SHA-256 hash of block contents"""
+        block_string = json.dumps({
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "transactions": self.transactions,
+            "previous_hash": self.previous_hash,
+            "nonce": self.nonce
+        }, sort_keys=True)
+        return hashlib.sha256(block_string.encode()).hexdigest()
+    
+    def to_dict(self) -> Dict:
+        """Convert block to dictionary"""
+        return {
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "transactions": self.transactions,
+            "previous_hash": self.previous_hash,
+            "nonce": self.nonce,
+            "hash": self.hash
+        }
+
+
+class Blockchain:
+    """Main blockchain system with mining and validation"""
+    
+    def _init_(self, team_name: str, secret_key: Optional[str] = None):
+        self.team_name = team_name
+        self.secret_key = secret_key
+        self.chain: List[Block] = []
+        self.pending_transactions: List[Dict] = []
+        self.difficulty = 2  # Starting difficulty
+        self.mining_reward = 50
+        
+        # Create genesis block
+        self._create_genesis_block()
+    
+    def _create_genesis_block(self) -> None:
+        """Create the first block in the chain"""
+        team_last_digit = sum(ord(c) for c in self.team_name) % 10
+        proof_of_work = f"00{team_last_digit}"
+        
+        genesis_block = Block(
+            index=0,
+            timestamp=time.time(),
+            transactions=[{"type": "genesis", "message": "Genesis Block"}],
+            previous_hash="0",
+            nonce=0
+        )
+        
+        # Mine genesis block to match proof of work
+        while not genesis_block.hash.startswith(proof_of_work):
+            genesis_block.nonce += 1
+            genesis_block.hash = genesis_block.calculate_hash()
+        
+        self.chain.append(genesis_block)
+        print(f"Genesis Block created with hash: {genesis_block.hash}")
+    
+    def add_transaction(self, sender: str, receiver: str, amount: float) -> bool:
+        """Add a new transaction to pending transactions"""
+        transaction = {
+            "sender": sender,
+            "receiver": receiver,
+            "amount": amount,
+            "timestamp": time.time()
+        }
+        self.pending_transactions.append(transaction)
+        return True
+    
+    def mine_block(self, miner_address: str) -> Block:
+        """Mine a new block with pending transactions"""
+        if not self.pending_transactions:
+            print("No transactions to mine")
+            return None
+        
+        # Add mining reward
+        self.pending_transactions.append({
+            "sender": "SYSTEM",
+            "receiver": miner_address,
+            "amount": self.mining_reward,
+            "timestamp": time.time()
+        })
+        
+        # Create new block
+        new_block = Block(
+            index=len(self.chain),
+            timestamp=time.time(),
+            transactions=self.pending_transactions.copy(),
+            previous_hash=self.chain[-1].hash
+        )
+        
+        # Proof of Work - mine the block
+        target = "0" * self.difficulty
+        start_time = time.time()
+        
+        while not new_block.hash.startswith(target):
+            new_block.nonce += 1
+            new_block.hash = new_block.calculate_hash()
+        
+        mining_time = time.time() - start_time
+        
+        # Add block to chain
+        self.chain.append(new_block)
+        self.pending_transactions = []
+        
+        # Adjust difficulty based on mining time
+        self._adjust_difficulty(mining_time)
+        
+        print(f"Block #{new_block.index} mined in {mining_time:.2f}s with {new_block.nonce} attempts")
+        print(f"  Hash: {new_block.hash}")
+        print(f"  Difficulty: {self.difficulty}")
+        
+        return new_block
+    
+    def _adjust_difficulty(self, mining_time: float) -> None:
+        """Dynamically adjust difficulty based on mining time"""
+        target_time = 10  # Target 10 seconds per block
+        
+        if mining_time < target_time / 2 and self.difficulty < 6:
+            self.difficulty += 1
+            print(f"  Difficulty increased to {self.difficulty}")
+        elif mining_time > target_time * 2 and self.difficulty > 1:
+            self.difficulty -= 1
+            print(f"  Difficulty decreased to {self.difficulty}")
+    
+    def is_chain_valid(self) -> bool:
+        """Validate the entire blockchain"""
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+            
+            # Check hash integrity
+            if current_block.hash != current_block.calculate_hash():
+                print(f"Block #{i} hash is invalid")
+                return False
+            
+            # Check previous hash reference
+            if current_block.previous_hash != previous_block.hash:
+                print(f"Block #{i} previous_hash doesn't match")
+                return False
+            
+            # Check proof of work (at least starting with required zeros)
+            if not current_block.hash.startswith("0"):
+                print(f"Block #{i} doesn't meet proof of work")
+                return False
+        
+        print("Blockchain is valid!")
+        return True
+    
+    def get_balance(self, address: str) -> float:
+        """Calculate balance for an address"""
+        balance = 0
+        for block in self.chain:
+            for transaction in block.transactions:
+                if transaction.get("sender") == address:
+                    balance -= transaction.get("amount", 0)
+                if transaction.get("receiver") == address:
+                    balance += transaction.get("amount", 0)
+        return balance
+    
+    def display_chain(self) -> None:
+        """Display the entire blockchain"""
+        print("\n" + "="*70)
+        print(f"BLOCKCHAIN - Team: {self.team_name}")
+        print("="*70)
+        for block in self.chain:
+            print(f"\nBlock #{block.index}")
+            print(f"  Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(block.timestamp))}")
+            print(f"  Transactions: {len(block.transactions)}")
+            for tx in block.transactions:
+                print(f"    - {tx}")
+            print(f"  Previous Hash: {block.previous_hash[:16]}...")
+            print(f"  Hash: {block.hash[:16]}...")
+            print(f"  Nonce: {block.nonce}")
+        print("\n" + "="*70)
+
+
+def main():
+    """Main demo function"""
+    print("="*70)
+    print("BLOCKCHAIN SIMULATION - ULTIMATE VERSION")
+    print("="*70)
+    
+    # Initialize blockchain (secret key would be revealed mid-competition)
+    team_name = "Team5"
+    blockchain = Blockchain(team_name, secret_key="competition_secret_2024")
+    
+    print(f"\nStarting blockchain for {team_name}")
+    print(f"Genesis block hash starts with: 00{sum(ord(c) for c in team_name) % 10}")
+    
+    # Stage 1: Mine at least 3 blocks beyond genesis
+    print("\n" + "-"*70)
+    print("STAGE 1: BASE BLOCKCHAIN")
+    print("-"*70)
+    
+    # Add transactions and mine blocks
+    print("\nAdding transactions and mining Block #1...")
+    blockchain.add_transaction("Alice", "Bob", 50)
+    blockchain.add_transaction("Bob", "Charlie", 25)
+    blockchain.add_transaction("Charlie", "Alice", 10)
+    blockchain.mine_block("Miner1")
+    
+    print("\nAdding transactions and mining Block #2...")
+    blockchain.add_transaction("Alice", "David", 30)
+    blockchain.add_transaction("David", "Eve", 15)
+    blockchain.mine_block("Miner1")
+    
+    print("\nAdding transactions and mining Block #3...")
+    blockchain.add_transaction("Eve", "Bob", 20)
+    blockchain.add_transaction("Bob", "Alice", 40)
+    blockchain.add_transaction("Charlie", "David", 5)
+    blockchain.mine_block("Miner2")
+    
+    print("\nAdding transactions and mining Block #4...")
+    blockchain.add_transaction("David", "Charlie", 25)
+    blockchain.mine_block("Miner2")
+    
+    # Validate chain
+    print("\n" + "-"*70)
+    print("VALIDATION")
+    print("-"*70)
+    blockchain.is_chain_valid()
+    
+    # Display balances
+    print("\n" + "-"*70)
+    print("ACCOUNT BALANCES")
+    print("-"*70)
+    for address in ["Alice", "Bob", "Charlie", "David", "Eve", "Miner1", "Miner2"]:
+        balance = blockchain.get_balance(address)
+        print(f"{address:12} : {balance:8.2f}")
+    
+    # Display full chain
+    blockchain.display_chain()
+    
+    # Demonstrate tampering detection
+    print("\n" + "-"*70)
+    print("TAMPERING DETECTION TEST")
+    print("-"*70)
+    print("Attempting to modify Block #2 transaction...")
+    blockchain.chain[2].transactions[0]["amount"] = 999999
+    blockchain.is_chain_valid()
+    
+    print("\n" + "="*70)
+    print(f"Blockchain simulation complete!")
+    print(f"  Total blocks: {len(blockchain.chain)}")
+    print(f"  Current difficulty: {blockchain.difficulty}")
+    print("="*70)
+
+
+if _name_ == "_main_":
+    main()
+    #code before the secrete key was given

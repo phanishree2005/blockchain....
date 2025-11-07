@@ -1,0 +1,279 @@
+import hashlib
+import time
+import json
+from typing import List, Dict, Optional
+
+def team_last_digit_from_name(team_name: str) -> int:
+    return sum(ord(c) for c in team_name) % 10
+
+class Block:
+    """Represents a single block in the blockchain"""
+
+    def _init_(
+        self,
+        index: int,
+        timestamp: float,
+        transactions: List[Dict],
+        previous_hash: str,
+        nonce: int = 0,
+        secret_key: str = ""
+    ):
+        self.index = index
+        self.timestamp = timestamp
+        self.transactions = transactions
+        self.previous_hash = previous_hash
+        self.nonce = nonce
+        self.secret_key = secret_key  # capture secret used for THIS block
+        self.hash = self.calculate_hash()
+
+    def calculate_hash(self) -> str:
+        """Calculate SHA-256 hash of block contents per Stage-1 spec"""
+        # Hash over: index + timestamp + transactions + previous_hash + nonce + secret_key
+        block_string = json.dumps({
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "transactions": self.transactions,
+            "previous_hash": self.previous_hash,
+            "nonce": self.nonce,
+            "secret_key": self.secret_key
+        }, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(block_string.encode()).hexdigest()
+
+    def to_dict(self) -> Dict:
+        """Convert block to dictionary (without exposing secret)"""
+        return {
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "transactions": self.transactions,
+            "previous_hash": self.previous_hash,
+            "nonce": self.nonce,
+            "hash": self.hash
+        }
+
+
+class Blockchain:
+    """Main blockchain system with mining and validation"""
+
+    def _init_(self, team_name: str, secret_key: Optional[str] = None):
+        self.team_name = team_name
+        self.team_last_digit = team_last_digit_from_name(team_name)
+        self.secret_key = secret_key or ""
+        self.chain: List[Block] = []
+        self.pending_transactions: List[Dict] = []
+        self.mining_reward = 50  # optional feature (allowed)
+        # Create genesis block
+        self._create_genesis_block()
+
+    @property
+    def pow_prefix(self) -> str:
+        """Stage-1 PoW prefix"""
+        return f"00{self.team_last_digit}"
+
+    def _create_genesis_block(self) -> None:
+        """Create the first block in the chain"""
+        genesis_block = Block(
+            index=0,
+            timestamp=time.time(),
+            transactions=[{"type": "genesis", "message": "Genesis Block"}],
+            previous_hash="0" * 64,
+            nonce=0,
+            secret_key=self.secret_key
+        )
+        # Mine genesis to satisfy PoW rule as well (nice-to-have, not strictly required)
+        while not genesis_block.hash.startswith(self.pow_prefix):
+            genesis_block.nonce += 1
+            genesis_block.hash = genesis_block.calculate_hash()
+
+        self.chain.append(genesis_block)
+        print(f"Genesis Block created with hash: {genesis_block.hash}")
+
+    def set_secret_key(self, new_secret: str) -> None:
+        """Update the secret when it’s announced mid-competition (future blocks use it)."""
+        self.secret_key = new_secret
+
+    def add_transaction(self, sender: str, receiver: str, amount: float) -> bool:
+        """Add a new transaction to pending transactions"""
+        transaction = {
+            "sender": sender,
+            "receiver": receiver,
+            "amount": float(amount),
+            "timestamp": time.time()
+        }
+        self.pending_transactions.append(transaction)
+        return True
+
+    def mine_block(self, miner_address: str) -> Block:
+        """Mine a new block with pending transactions (Stage-1 rules)"""
+        # Require at least 2 pending tx so that after reward we have ≥3,
+        # or just enforce ≥3 strictly including reward. Here we enforce ≥2 pre-reward.
+        if len(self.pending_transactions) < 2:
+            raise ValueError("Need at least 2 user transactions before mining (reward will make it 3).")
+
+        # Add mining reward (counts toward the ≥3 requirement)
+        self.pending_transactions.append({
+            "sender": "SYSTEM",
+            "receiver": miner_address,
+            "amount": self.mining_reward,
+            "timestamp": time.time()
+        })
+
+        # Create new block
+        new_block = Block(
+            index=len(self.chain),
+            timestamp=time.time(),
+            transactions=self.pending_transactions.copy(),
+            previous_hash=self.chain[-1].hash,
+            nonce=0,
+            secret_key=self.secret_key,
+        )
+
+        # Proof of Work - Stage-1 exact prefix
+        start_time = time.time()
+        while not new_block.hash.startswith(self.pow_prefix):
+            new_block.nonce += 1
+            new_block.hash = new_block.calculate_hash()
+        mining_time = time.time() - start_time
+
+        # Add block to chain
+        self.chain.append(new_block)
+        self.pending_transactions = []
+
+        print(f"Block #{new_block.index} mined in {mining_time:.2f}s with {new_block.nonce} attempts")
+        print(f"  Hash: {new_block.hash}")
+        print(f"  PoW Prefix: {self.pow_prefix}")
+
+        return new_block
+
+    def is_chain_valid(self) -> bool:
+        """Validate the entire blockchain per Stage-1 rules"""
+        if not self.chain:
+            return False
+
+        # Validate genesis
+        g = self.chain[0]
+        if g.previous_hash != "0" * 64:
+            print("Genesis previous_hash invalid")
+            return False
+        if g.calculate_hash() != g.hash:
+            print("Genesis hash recompute mismatch")
+            return False
+        if not g.hash.startswith(self.pow_prefix):
+            print("Genesis PoW invalid")
+            return False
+
+        # Validate each subsequent block
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            # Check previous hash linkage
+            if current_block.previous_hash != previous_block.hash:
+                print(f"Block #{i} previous_hash doesn't match")
+                return False
+
+            # Check content-hash integrity (with stored secret_key)
+            if current_block.calculate_hash() != current_block.hash:
+                print(f"Block #{i} hash recompute mismatch")
+                return False
+
+            # Stage-1 specific PoW prefix
+            if not current_block.hash.startswith(self.pow_prefix):
+                print(f"Block #{i} PoW prefix invalid (expected {self.pow_prefix})")
+                return False
+
+            # ≥3 transactions per non-genesis block
+            if len(current_block.transactions) < 3:
+                print(f"Block #{i} has fewer than 3 transactions")
+                return False
+
+        print("Blockchain is valid!")
+        return True
+
+    def get_balance(self, address: str) -> float:
+        """Calculate balance for an address"""
+        balance = 0.0
+        for block in self.chain:
+            for tx in block.transactions:
+                if tx.get("sender") == address:
+                    balance -= float(tx.get("amount", 0))
+                if tx.get("receiver") == address:
+                    balance += float(tx.get("amount", 0))
+        return balance
+
+    def display_chain(self) -> None:
+        """Display the entire blockchain"""
+        print("\n" + "="*70)
+        print(f"BLOCKCHAIN - Team: {self.team_name}")
+        print("="*70)
+        for block in self.chain:
+            print(f"\nBlock #{block.index}")
+            print(f"  Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(block.timestamp))}")
+            print(f"  Transactions: {len(block.transactions)}")
+            for tx in block.transactions:
+                print(f"    - {tx}")
+            print(f"  Previous Hash: {block.previous_hash[:16]}...")
+            print(f"  Hash: {block.hash[:16]}...")
+            print(f"  Nonce: {block.nonce}")
+        print("\n" + "="*70)
+
+
+def main():
+    """Main demo function — mines 3+ blocks beyond genesis"""
+    print("="*70)
+    print("BLOCKCHAIN SIMULATION - STAGE 1")
+    print("="*70)
+
+    team_name = "Team5"
+    blockchain = Blockchain(team_name, secret_key="competition_secret_2024")
+
+    print(f"\nStarting blockchain for {team_name}")
+    print(f"PoW prefix is: {blockchain.pow_prefix}")
+
+    # Mine at least 3 blocks beyond genesis
+    print("\n" + "-"*70)
+    print("STAGE 1: BASE BLOCKCHAIN")
+    print("-"*70)
+
+    # Block #1
+    blockchain.add_transaction("Alice", "Bob", 50)
+    blockchain.add_transaction("Bob", "Charlie", 25)
+    blockchain.mine_block("Miner1")
+
+    # Block #2
+    blockchain.add_transaction("Alice", "David", 30)
+    blockchain.add_transaction("David", "Eve", 15)
+    blockchain.mine_block("Miner1")
+
+    # Block #3
+    blockchain.add_transaction("Eve", "Bob", 20)
+    blockchain.add_transaction("Bob", "Alice", 40)
+    blockchain.mine_block("Miner2")
+
+    # Optional extra block
+    blockchain.add_transaction("Charlie", "David", 5)
+    blockchain.add_transaction("David", "Charlie", 25)
+    blockchain.mine_block("Miner2")
+
+    print("\n" + "-"*70)
+    print("VALIDATION")
+    print("-"*70)
+    blockchain.is_chain_valid()
+
+    print("\n" + "-"*70)
+    print("ACCOUNT BALANCES")
+    print("-"*70)
+    for address in ["Alice", "Bob", "Charlie", "David", "Eve", "Miner1", "Miner2"]:
+        balance = blockchain.get_balance(address)
+        print(f"{address:12} : {balance:8.2f}")
+
+    blockchain.display_chain()
+
+    print("\n" + "="*70)
+    print(f"Blockchain simulation complete!")
+    print(f"  Total blocks: {len(blockchain.chain)}")
+    print("="*70)
+
+
+if _name_ == "_main_":
+    main()
+#code after updating the secrete key
